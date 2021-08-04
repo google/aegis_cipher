@@ -13,6 +13,12 @@ operations, but this is in general unsafe. It can be made safe, if you follow
 the implementator's guide carefully. Please consult aegis128L.h for an API
 documentation.
 
+We support:
+
+- x86-64 platforms with AES-NI and SSE2,
+- ARM NEON,
+- PPC Altivec.
+
 This is not an officially supported Google product.
 
 ## Building

@@ -14,15 +14,6 @@
 
 #include "aegis128L.h"
 
-#include "absl/strings/escaping.h"
-
-#ifdef __SSE2__
-#ifdef __AES__
-
-#include <emmintrin.h>  // SSE2
-#include <wmmintrin.h>  // AES_NI instructions.
-#include <xmmintrin.h>  // Datatype __mm128i
-
 #include <atomic>
 #include <cstring>
 #include <fstream>
@@ -32,8 +23,10 @@
 
 #include "gtest/gtest.h"
 #include "absl/numeric/int128.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/string_view.h"
 #include "jsoncpp/json/reader.h"
+#include "vec128.h"
 
 namespace security {
 
@@ -60,7 +53,7 @@ Aegis128LNonce CounterNonce() {
   while (!ctr.compare_exchange_weak(next, next + 1, std::memory_order_relaxed,
                                     std::memory_order_relaxed)) {
   };
-  return _mm_set_epi64x(Uint128Low64(next), Uint128High64(next));
+  return MakeVec128Epi64x(Uint128Low64(next), Uint128High64(next));
 }
 
 std::vector<TestVector>* test_vectors = new std::vector<TestVector>({{
@@ -98,16 +91,16 @@ std::vector<TestVector>* test_vectors = new std::vector<TestVector>({{
 
 class Aegis128LTest : public testing::Test {
  public:
-  static std::string m128i2Hex(__m128i value) {
+  static std::string m128i2Hex(Vec128 value) {
     char bytes[16];
-    _mm_storeu_si128(reinterpret_cast<__m128i*>(bytes), value);
+    Vec128Store(bytes, value);
     return absl::BytesToHexString(absl::string_view(bytes, 16));
   }
 
-  static __m128i Hex2m128i(absl::string_view hex) {
+  static Vec128 Hex2m128i(absl::string_view hex) {
     std::string val = absl::HexStringToBytes(hex);
     assert(16 == val.size());
-    return _mm_loadu_si128(reinterpret_cast<const __m128i*>(val.data()));
+    return Vec128Load(val.data());
   }
 
   static void CleanseNonSensitiveStateFields(Aegis128LState* state) {
@@ -129,12 +122,11 @@ class Aegis128LTest : public testing::Test {
     std::string plaintext = absl::HexStringToBytes(plaintext_hex);
     std::string aad = absl::HexStringToBytes(aad_hex);
     std::unique_ptr<char[]> buffer(new char[plaintext.size()]);
-    Aegis128LTag tag;
     Aegis128LState state;
     state.Reset(key, iv);
     state.AssociateData(aad);
     state.Encrypt(plaintext, buffer.get());
-    state.Finalize(&tag);
+    Aegis128LTag tag = state.Finalize();
     *raw_ciphertext_hex = absl::BytesToHexString(
         absl::string_view(buffer.get(), plaintext.size()));
     *tag_hex = m128i2Hex(tag);
@@ -245,6 +237,11 @@ class Aegis128LTest : public testing::Test {
     return (correct_encryptions == num_tests) &&
            (correct_decryptions == num_tests);
   }
+
+  static std::string FinalizedHex(Aegis128LState& state) {
+    Aegis128LTag tag = state.Finalize();
+    return m128i2Hex(tag);
+  }
 };
 
 TEST_F(Aegis128LTest, EncryptDecrypt) {
@@ -330,31 +327,6 @@ TEST_F(Aegis128LTest, TestVectors) {
   ASSERT_TRUE(WycheproofTest(*root));
 }
 
-TEST_F(Aegis128LTest, FinalizeAPI) {
-  std::string key_hex = "10010000000000000000000000000000";
-  std::string iv_hex = "10000200000000000000000000000000";
-  std::string key = absl::HexStringToBytes(key_hex);
-  std::string iv = absl::HexStringToBytes(iv_hex);
-
-  Aegis128LState state;
-  state.Reset(key, iv);
-  Aegis128LTag tag;
-  state.Finalize(&tag);
-
-  Aegis128LState state2;
-  state2.Reset(key, iv);
-  char tag2[16];
-  state2.Finalize(tag2);
-
-  Aegis128LState state3;
-  state3.Reset(key, iv);
-  Aegis128LTag tag3 = state3.Finalize();
-
-  // Verify that all finalize APIs return the same result.
-  ASSERT_EQ(std::memcmp(reinterpret_cast<char*>(&tag), tag2, 16), 0);
-  ASSERT_EQ(std::memcmp(reinterpret_cast<char*>(&tag), &tag3, 16), 0);
-}
-
 TEST_F(Aegis128LTest, IncrementalUpdate) {
   std::string key_hex = "10010000000000000000000000000000";
   std::string iv_hex = "10000200000000000000000000000000";
@@ -383,14 +355,11 @@ TEST_F(Aegis128LTest, IncrementalUpdate) {
         absl::string_view(ciphertext_buffer.get(), p.size())));
   }
 
-  Aegis128LTag tag;
-  state.Finalize(&tag);
-
   std::string raw_ciphertext_hex;
   std::string tag_hex;
   EncryptHex(key_hex, iv_hex, aad_hex, plaintext_hex, &raw_ciphertext_hex,
              &tag_hex);
-  ASSERT_EQ(m128i2Hex(tag), tag_hex);
+  ASSERT_EQ(FinalizedHex(state), tag_hex);
   ASSERT_EQ(raw_ciphertext_hex, ciphertext_hex);
 
   // Decrypt
@@ -402,7 +371,6 @@ TEST_F(Aegis128LTest, IncrementalUpdate) {
   std::string raw_ciphertext = absl::HexStringToBytes(raw_ciphertext_hex);
   std::unique_ptr<char[]> plaintext_buffer(new char[raw_ciphertext.size()]);
   dec_state.Decrypt(raw_ciphertext, plaintext_buffer.get());
-  Aegis128LTag dec_tag;
 
   // We force the last operation to be "ENCRYPT" so that we can call
   // dec_state.Finalize. Usually callers should call .Verify, but we would like
@@ -410,8 +378,7 @@ TEST_F(Aegis128LTest, IncrementalUpdate) {
   // cases.
   ForceStage(&dec_state, ENCRYPT);
 
-  dec_state.Finalize(&dec_tag);
-  ASSERT_EQ(m128i2Hex(dec_tag), tag_hex);
+  ASSERT_EQ(FinalizedHex(dec_state), tag_hex);
   ASSERT_EQ(plaintext_hex, absl::BytesToHexString(absl::string_view(
                                plaintext_buffer.get(), raw_ciphertext.size())));
 }
@@ -443,8 +410,7 @@ TEST_F(Aegis128LTest, IncrementalUpdate2) {
   ref.Encrypt(msg, expected.get());
   std::string expected_hex =
       absl::BytesToHexString(absl::string_view(expected.get(), msg.size()));
-  Aegis128LTag expected_tag;
-  ref.Finalize(&expected_tag);
+  std::string expected_tag = FinalizedHex(ref);
 
   // Incremental update of aad
   for (int s1 = 0; s1 <= aad.size(); s1++) {
@@ -460,9 +426,7 @@ TEST_F(Aegis128LTest, IncrementalUpdate2) {
       std::unique_ptr<char[]> ct(new char[msg.size()]);
       memset(&ct[0], 0xff, msg.size());
       state.Encrypt(msg, ct.get());
-      Aegis128LTag tag;
-      state.Finalize(&tag);
-      ASSERT_EQ(m128i2Hex(expected_tag), m128i2Hex(tag))
+      ASSERT_EQ(expected_tag, FinalizedHex(state))
           << "s1:" << s1 << " s2:" << s2;
     }
   }
@@ -480,9 +444,7 @@ TEST_F(Aegis128LTest, IncrementalUpdate2) {
       state.Encrypt(m1, ct.get());
       state.Encrypt(m2, ct.get() + s1);
       state.Encrypt(m3, ct.get() + s2);
-      Aegis128LTag tag;
-      state.Finalize(&tag);
-      ASSERT_EQ(m128i2Hex(expected_tag), m128i2Hex(tag))
+      ASSERT_EQ(expected_tag, FinalizedHex(state))
           << "s1:" << s1 << " s2:" << s2;
       std::string ct_hex =
           absl::BytesToHexString(absl::string_view(ct.get(), msg.size()));
@@ -499,19 +461,17 @@ TEST_F(Aegis128LTest, NonceAPIEquality) {
   state1.Reset(
       LoadKey(key),
       LoadNonce(absl::HexStringToBytes("000102030405060708090a0b0c0d0e0f")));
-  Aegis128LTag tag1;
-  state1.Finalize(&tag1);
+  char tag1[16];
+  state1.Finalize(tag1);
 
   Aegis128LState state2;
   state2.Reset(LoadKey(key),
                LoadNonceLE(0x0f0e0d0c0b0a0908, 0x0706050403020100));
-  Aegis128LTag tag2;
-  state2.Finalize(&tag2);
+  char tag2[16];
+  state2.Finalize(tag2);
 
   // Verify both nonce APIs return the same result.
-  ASSERT_EQ(std::memcmp(reinterpret_cast<char*>(&tag1),
-                        reinterpret_cast<char*>(&tag2), 16),
-            0);
+  ASSERT_EQ(std::memcmp(tag1, tag2, 16), 0);
 }
 
 TEST_F(Aegis128LTest, ScrubbingState) {
@@ -536,6 +496,3 @@ TEST_F(Aegis128LTest, ScrubbingState) {
 }  // namespace aegis
 
 }  // namespace security
-
-#endif  // __SSE2__
-#endif  // __AES__

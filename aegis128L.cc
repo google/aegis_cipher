@@ -14,16 +14,6 @@
 
 #include "aegis128L.h"
 
-#ifdef __SSE2__
-#ifdef __AES__
-
-#include <emmintrin.h>  // SSE2
-#include <tmmintrin.h>  // _mm_shuffle_epi8
-#include <wmmintrin.h>  // AES_NI instructions.
-#include <xmmintrin.h>  // Datatype __mm128i
-
-#include <memory>
-
 namespace security {
 
 namespace aegis {
@@ -36,17 +26,8 @@ namespace {
 
 inline ABSL_ATTRIBUTE_ALWAYS_INLINE bool CompareTags(Aegis128LTag tag,
                                                      const char *expected_tag) {
-  // Compare byte wise.
-  // A byte in eq is 0xff if the corresponding byte in x and y are equal
-  // and 0x00 if the corresponding byte in x and y are not equal.
-  __m128i eq = _mm_cmpeq_epi8(
-      _mm_loadu_si128(reinterpret_cast<const __m128i *>(expected_tag)), tag);
-  // Extract the 16 most significant bits of each byte in eq.
-  int bits = _mm_movemask_epi8(eq);
-  return 0xFFFF == bits;
+  return Vec128Eq(tag, Vec128Load(expected_tag));
 }
-
-__m128i AESRound(__m128i x, __m128i y) { return _mm_aesenc_si128(x, y); }
 
 // This function determines if we can safely load "size" number of bytes from
 // ptr. On Intel (and this file is pretty Intel specific already), we cannot
@@ -86,18 +67,14 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE Aegis128LBlock MaskedLoad(const char *data,
 #endif
   const char *data_aligned = data - offset;
   if ((offset == 0 && size == 32) || IsWideLoadSafe(data_aligned, 32)) {
-    return std::make_tuple(
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(data_aligned)),
-        _mm_loadu_si128(reinterpret_cast<const __m128i *>(data_aligned + 16)));
+    return Vec256Load(data_aligned);
   }
   // We cannot do a full-load from the memory directly, as a 32-bytes wide load
   // might cause page-fault. We copy to scratch space and do a 32-byte load from
   // there.
-  alignas(16) uint8_t tmp[32];
+  char tmp[32];
   memmove(tmp + offset, data, size);
-  return std::make_tuple(
-      _mm_load_si128(reinterpret_cast<const __m128i *>(tmp)),
-      _mm_load_si128(reinterpret_cast<const __m128i *>(tmp + 16)));
+  return Vec256Load(tmp);
 }
 
 void MaskedStore(Aegis128LBlock block, char *data, size_t offset, size_t size) {
@@ -107,142 +84,126 @@ void MaskedStore(Aegis128LBlock block, char *data, size_t offset, size_t size) {
   if (size == 0) {
     return;
   }
-  __m128i block1;
-  __m128i block2;
-
-  std::tie(block1, block2) = block;
   if (size == 32) {
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(data), block1);
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(data + 16), block2);
+    Vec256Store(data, block);
     return;
   }
 
-  alignas(16) uint8_t tmp[32];
-  _mm_store_si128(reinterpret_cast<__m128i *>(tmp), block1);
-  _mm_store_si128(reinterpret_cast<__m128i *>(tmp + 16), block2);
-
+  char tmp[32];
+  Vec256Store(tmp, block);
   memmove(data, tmp + offset, size);
 }
 
-const __m128i mask_0x20_0x11 =
-    _mm_set_epi32(0x201f1e1d, 0x1c1b1a19, 0x18171615, 0x14131211);
-const __m128i mask_0x10_0x01 =
-    _mm_set_epi32(0x100f0e0d, 0x0c0b0a09, 0x08070605, 0x04030201);
+const Vec128 mask_0x20_0x11 =
+    MakeVec128Epi64x(0x201f1e1d1c1b1a19, 0x1817161514131211);
+const Vec128 mask_0x10_0x01 =
+    MakeVec128Epi64x(0x100f0e0d0c0b0a09, 0x0807060504030201);
 
 // Constants from the AEGIS paper used in preparation of the IV
-__m128i const0() {
-  return _mm_set_epi32(0x6279e990, 0x59372215, 0x0d080503, 0x02010100);
+Vec128 const0() {
+  return MakeVec128Epi64x(0x6279e99059372215, 0x0d08050302010100);
 }
-__m128i const1() {
-  return _mm_set_epi32(0xdd28b573, 0x42311120, 0xf12fc26d, 0x55183ddb);
-}
-
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE Aegis128LBlock KeyStream(__m128i S[8]) {
-  __m128i even = _mm_and_si128(S[2], S[3]);
-  even = _mm_xor_si128(_mm_xor_si128(S[1], S[6]), even);
-
-  __m128i odd = _mm_and_si128(S[6], S[7]);
-  odd = _mm_xor_si128(_mm_xor_si128(S[2], S[5]), odd);
-  return std::make_tuple(even, odd);
+Vec128 const1() {
+  return MakeVec128Epi64x(0xdd28b57342311120, 0xf12fc26d55183ddb);
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE Aegis128LBlock BlockXor(Aegis128LBlock x,
-                                                            Aegis128LBlock y) {
-  __m128i x1, x2;
-  __m128i y1, y2;
-  std::tie(x1, x2) = x;
-  std::tie(y1, y2) = y;
-  return std::make_tuple(_mm_xor_si128(x1, y1), _mm_xor_si128(x2, y2));
+inline ABSL_ATTRIBUTE_ALWAYS_INLINE Aegis128LBlock KeyStream(Vec128 S[8]) {
+  Vec128 even = Vec128And(S[2], S[3]);
+  even = Vec128Xor(Vec128Xor(S[1], S[6]), even);
+
+  Vec128 odd = Vec128And(S[6], S[7]);
+  odd = Vec128Xor(Vec128Xor(S[2], S[5]), odd);
+  return MakeVec256(even, odd);
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE void StateUpdateRounds(__m128i S[8],
-                                                           __m128i S0,
-                                                           __m128i S4) {
-  __m128i w = AESRound(S[7], S0);
-  S[7] = AESRound(S[6], S[7]);
-  S[6] = AESRound(S[5], S[6]);
-  S[5] = AESRound(S[4], S[5]);
-  S[4] = AESRound(S[3], S4);
-  S[3] = AESRound(S[2], S[3]);
-  S[2] = AESRound(S[1], S[2]);
-  S[1] = AESRound(S[0], S[1]);
+inline ABSL_ATTRIBUTE_ALWAYS_INLINE void StateUpdateRounds(Vec128 S[8],
+                                                           Vec128 S0,
+                                                           Vec128 S4) {
+  Vec128 w = Vec128AesRound(S[7], S0);
+  S[7] = Vec128AesRound(S[6], S[7]);
+  S[6] = Vec128AesRound(S[5], S[6]);
+  S[5] = Vec128AesRound(S[4], S[5]);
+  S[4] = Vec128AesRound(S[3], S4);
+  S[3] = Vec128AesRound(S[2], S[3]);
+  S[2] = Vec128AesRound(S[1], S[2]);
+  S[1] = Vec128AesRound(S[0], S[1]);
   S[0] = w;
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE void StateUpdate(__m128i S[8],
+inline ABSL_ATTRIBUTE_ALWAYS_INLINE void StateUpdate(Vec128 S[8],
                                                      Aegis128LBlock msg,
                                                      size_t offset,
                                                      size_t size) {
 #ifndef NDEBUG
   assert(size + offset <= 32);
 #endif
-  __m128i ma;
-  __m128i mb;
+  Vec128 ma;
+  Vec128 mb;
 
   std::tie(ma, mb) = msg;
 
   if (offset == 0) {
     StateUpdateRounds(S, S[0], S[4]);
   } else {
-    __m128i a = _mm_set1_epi8(offset);
-    __m128i mask_a = _mm_cmplt_epi8(a, mask_0x10_0x01);
-    __m128i mask_b = _mm_cmplt_epi8(a, mask_0x20_0x11);
-    ma = _mm_and_si128(ma, mask_a);
-    mb = _mm_and_si128(mb, mask_b);
+    Vec128 a = MakeVec128BroadcastEpi8(offset);
+    Vec128 mask_a = Vec128CmpLtEpi8(a, mask_0x10_0x01);
+    Vec128 mask_b = Vec128CmpLtEpi8(a, mask_0x20_0x11);
+    ma = Vec128And(ma, mask_a);
+    mb = Vec128And(mb, mask_b);
   }
   size_t end = size + offset;
   if (end != 32) {
-    __m128i a = _mm_set1_epi8(end);
-    __m128i mask_a = _mm_cmplt_epi8(a, mask_0x10_0x01);
-    __m128i mask_b = _mm_cmplt_epi8(a, mask_0x20_0x11);
-    ma = _mm_andnot_si128(mask_a, ma);
-    mb = _mm_andnot_si128(mask_b, mb);
+    Vec128 a = MakeVec128BroadcastEpi8(end);
+    Vec128 mask_a = Vec128CmpLtEpi8(a, mask_0x10_0x01);
+    Vec128 mask_b = Vec128CmpLtEpi8(a, mask_0x20_0x11);
+    ma = Vec128AndNot(mask_a, ma);
+    mb = Vec128AndNot(mask_b, mb);
   }
-  S[0] = _mm_xor_si128(ma, S[0]);
-  S[4] = _mm_xor_si128(mb, S[4]);
+  S[0] = Vec128Xor(ma, S[0]);
+  S[4] = Vec128Xor(mb, S[4]);
 }
 
 }  // namespace
 
 namespace internal {
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE void Initialize(__m128i S[8], __m128i key,
-                                                    __m128i iv) {
-  S[0] = _mm_xor_si128(key, iv);
+inline ABSL_ATTRIBUTE_ALWAYS_INLINE void Initialize(Vec128 S[8], Vec128 key,
+                                                    Vec128 iv) {
+  S[0] = Vec128Xor(key, iv);
   S[1] = const1();
   S[2] = const0();
   S[3] = const1();
-  S[4] = _mm_xor_si128(key, iv);
-  S[5] = _mm_xor_si128(key, const0());
-  S[6] = _mm_xor_si128(key, const1());
-  S[7] = _mm_xor_si128(key, const0());
-  Aegis128LBlock msg = std::make_tuple(iv, key);
+  S[4] = Vec128Xor(key, iv);
+  S[5] = Vec128Xor(key, const0());
+  S[6] = Vec128Xor(key, const1());
+  S[7] = Vec128Xor(key, const0());
+  Aegis128LBlock msg = MakeVec256(iv, key);
   for (int i = 0; i < 10; i++) {
     StateUpdate(S, msg, 0, 32);
   }
 }
 
-inline ABSL_ATTRIBUTE_ALWAYS_INLINE __m128i Finalize(__m128i S[8],
-                                                     size_t aad_size_in_bytes,
-                                                     size_t pt_size_in_bytes) {
+inline ABSL_ATTRIBUTE_ALWAYS_INLINE Vec128 Finalize(Vec128 S[8],
+                                                    size_t aad_size_in_bytes,
+                                                    size_t pt_size_in_bytes) {
   uint64_t aad_bits = 8 * aad_size_in_bytes;
   uint64_t pt_bits = 8 * pt_size_in_bytes;
-  __m128i tmp0 = _mm_set_epi64x(pt_bits, aad_bits);
-  __m128i tmp = _mm_xor_si128(tmp0, S[2]);
-  Aegis128LBlock msg = std::make_tuple(tmp, tmp);
+  Vec128 tmp0 = MakeVec128Epi64x(pt_bits, aad_bits);
+  Vec128 tmp = Vec128Xor(tmp0, S[2]);
+  Aegis128LBlock msg = MakeVec256(tmp, tmp);
   for (int i = 0; i < 7; i++) {
     StateUpdate(S, msg, 0, 32);
   }
-  __m128i tag = _mm_xor_si128(S[0], S[1]);
-  tag = _mm_xor_si128(tag, S[2]);
-  tag = _mm_xor_si128(tag, S[3]);
-  tag = _mm_xor_si128(tag, S[4]);
-  tag = _mm_xor_si128(tag, S[5]);
-  tag = _mm_xor_si128(tag, S[6]);
+  Vec128 tag = Vec128Xor(S[0], S[1]);
+  tag = Vec128Xor(tag, S[2]);
+  tag = Vec128Xor(tag, S[3]);
+  tag = Vec128Xor(tag, S[4]);
+  tag = Vec128Xor(tag, S[5]);
+  tag = Vec128Xor(tag, S[6]);
   // https://eprint.iacr.org/2013/695.pdf computes the tag as sum over S[0..7],
   // while http://competitions.cr.yp.to/round1/aegisv1.pdf computes the tag
   // over S[0..6]
-  // tag = _mm_xor_si128(tag, S[7]);
+  // tag = Vec128Xor(tag, S[7]);
   return tag;
 }
 
@@ -280,8 +241,8 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void ProcessBlock(
   } else if (direction == ENCRYPT || direction == DECRYPT) {
     // We resume a partial-block, the key-stream is stored in S[8]/S[9].
     Aegis128LBlock key_stream =
-        offset ? std::make_tuple(rs->S[8], rs->S[9]) : KeyStream(rs->S);
-    Aegis128LBlock out_block = BlockXor(in_block, key_stream);
+        offset ? MakeVec256(rs->S[8], rs->S[9]) : KeyStream(rs->S);
+    Aegis128LBlock out_block = Vec256Xor(in_block, key_stream);
     MaskedStore(out_block, output, offset, size);
     StateUpdate(rs->S, direction == ENCRYPT ? in_block : out_block, offset,
                 size);
@@ -340,8 +301,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void Process(
 
 Aegis128LPreKeyed::Aegis128LPreKeyed(absl::string_view key,
                                      std::function<Aegis128LNonce()> get_nonce)
-    : key_(_mm_loadu_si128(reinterpret_cast<const __m128i *>(key.data()))),
-      get_nonce_(get_nonce) {
+    : key_(Vec128Load(key.data())), get_nonce_(get_nonce) {
   assert(key.size() == 16);
 }
 
@@ -355,7 +315,7 @@ void Aegis128LPreKeyed::Encrypt(absl::string_view plaintext,
   ciphertext->resize(ciphertext_size);
   char *buffer = &(*ciphertext)[0];
   Aegis128LNonce nonce = get_nonce_();
-  _mm_storeu_si128(reinterpret_cast<__m128i *>(buffer), nonce);
+  Vec128Store(buffer, nonce);
   Aegis128LState state;
   state.Reset(key_, nonce);
   state.AssociateData(aad);
@@ -437,10 +397,3 @@ bool Aegis128LState::Verify(const char *expected_tag,
 }  // namespace aegis
 
 }  // namespace security
-
-#else
-#error AESNI instruction set required.
-#endif  // __AES__
-#else
-#error SSE2 instruction set required.
-#endif  // __SSE2__

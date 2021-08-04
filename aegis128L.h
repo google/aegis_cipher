@@ -12,28 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef SECURITY_UTIL_CRYPT_AEGIS_AEGIS128L_H_
-#define SECURITY_UTIL_CRYPT_AEGIS_AEGIS128L_H_
-
-#ifdef __SSE2__
-#ifdef __AES__
-
-#include <emmintrin.h>  // SSE2
-#include <wmmintrin.h>  // AES_NI instructions.
-#include <xmmintrin.h>  // Datatype __mm128i
+#ifndef AEGIS_CIPHER_AEGIS128L_H_
+#define AEGIS_CIPHER_AEGIS128L_H_
 
 #include "absl/base/internal/endian.h"
 #include "absl/functional/function_ref.h"
 #include "absl/strings/string_view.h"
+#include "vec128.h"
+#include "vec256_tuples.h"
 
 namespace security {
 
 namespace aegis {
 
-typedef std::tuple<__m128i, __m128i> Aegis128LBlock;
-typedef __m128i Aegis128LTag;
-typedef __m128i Aegis128LNonce;
-typedef __m128i Aegis128LKey;
+typedef Vec256 Aegis128LBlock;
+typedef Vec128 Aegis128LTag;
+typedef Vec128 Aegis128LNonce;
+typedef Vec128 Aegis128LKey;
 
 namespace internal {
 
@@ -56,27 +51,23 @@ struct ResumableState final {
   // save the key stream in S[8..9] and use that in the next invocation.
 
   // NOLINTNEXTLINE
-  alignas(128) __m128i S[10];
+  alignas(128) Vec128 S[10];
 };
 
 }  // namespace internal
 
-inline Aegis128LKey LoadKey(const char *key) {
-  return _mm_loadu_si128(reinterpret_cast<const __m128i *>(key));
-}
+inline Aegis128LKey LoadKey(const char *key) { return Vec128Load(key); }
 
 inline Aegis128LKey LoadKey(absl::string_view key) {
   assert(key.size() == 16);
-  return _mm_loadu_si128(reinterpret_cast<const __m128i *>(key.data()));
+  return Vec128Load(key.data());
 }
 
-inline Aegis128LNonce LoadNonce(const char *nonce) {
-  return _mm_loadu_si128(reinterpret_cast<const __m128i *>(nonce));
-}
+inline Aegis128LNonce LoadNonce(const char *nonce) { return Vec128Load(nonce); }
 
 inline Aegis128LNonce LoadNonce(absl::string_view nonce) {
   assert(nonce.size() == 16);
-  return _mm_loadu_si128(reinterpret_cast<const __m128i *>(nonce.data()));
+  return Vec128Load(nonce.data());
 }
 
 // Load nonce from two numbers with n0 being the first part, and n1 being the
@@ -85,8 +76,8 @@ inline Aegis128LNonce LoadNonceLE(uint64_t n1, uint64_t n0) {
   // While it is not particularly useful to have LittleEndian::FromHost
   // conversions in heavily Intel focused code, it reminds us that we expected
   // n1 & n0 to be in little-endian.
-  return _mm_set_epi64x(absl::little_endian::FromHost64(n1),
-                        absl::little_endian::FromHost64(n0));
+  return MakeVec128Epi64x(absl::little_endian::FromHost64(n1),
+                          absl::little_endian::FromHost64(n0));
 }
 
 class Aegis128LPreKeyed final {
@@ -115,7 +106,7 @@ class Aegis128LPreKeyed final {
   friend class Aegis128LTest;
 
  private:
-  const __m128i key_;
+  const Aegis128LKey key_;
   std::function<Aegis128LNonce()> get_nonce_;
 };
 
@@ -211,14 +202,9 @@ class Aegis128LState final {
     Decrypt(ciphertext.data(), ciphertext.size(), plaintext);
   }
 
-  // Produces Aegis tag.
-  Aegis128LTag Finalize();
-
-  void Finalize(Aegis128LTag *tag) { *tag = Finalize(); }
-
   void Finalize(char *tag) {
     Aegis128LTag generated_tag = Finalize();
-    _mm_storeu_si128(reinterpret_cast<__m128i *>(tag), generated_tag);
+    Vec128Store(tag, generated_tag);
   }
 
   // Finalizes the Aegis state and checks the result against tag.  The caller
@@ -246,17 +232,13 @@ class Aegis128LState final {
   void CheckStage(internal::AegisStage current_stage,
                   std::initializer_list<internal::AegisStage> allowed_stages) { }
 #endif
+
+  // Produces Aegis tag.
+  Aegis128LTag Finalize();
 };
 
 }  // namespace aegis
 
 }  // namespace security
 
-#else
-#error AESNI instruction set required.
-#endif  // __AES__
-#else
-#error SSE2 instruction set required.
-#endif  // __SSE2__
-
-#endif  // SECURITY_UTIL_CRYPT_AEGIS_AEGIS128L_H_
+#endif  // AEGIS_CIPHER_AEGIS128L_H_
