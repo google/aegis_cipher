@@ -13,13 +13,16 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    container:
+      image: 'ubuntu:21.04'
+
     steps:
     - uses: actions/checkout@v2
 
     - name: Install dependencies
       run: |
         sudo apt-get update -y
-        sudo apt-get install -y libgtest-dev libabsl-dev libjsoncpp-dev
+        sudo apt-get install -y build-essentials cmake libgtest-dev libabsl-dev libjsoncpp-dev
 
     - name: Configure CMake
       run: cmake -B ${{github.workspace}}/build -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
