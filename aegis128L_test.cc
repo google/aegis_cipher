@@ -22,6 +22,7 @@
 #include <set>
 
 #include "gtest/gtest.h"
+#include "absl/base/dynamic_annotations.h"
 #include "absl/numeric/int128.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/string_view.h"
@@ -489,6 +490,7 @@ TEST_F(Aegis128LTest, ScrubbingState) {
   // backing space of state with zeros after destruction.
   CleanseNonSensitiveStateFields(state);
   state->~Aegis128LState();
+  ABSL_ANNOTATE_MEMORY_IS_INITIALIZED(backing, sizeof(Aegis128LState));
   for (int i = 0; i < sizeof(Aegis128LState); i++) {
     ASSERT_EQ(backing[i], 0);
   }
