@@ -61,12 +61,7 @@ inline Vec128 Vec128AesRound(Vec128 state, Vec128 round_key) {
 
 inline Vec128 Vec128And(Vec128 x, Vec128 y) { return vec_and(x, y); }
 
-inline Vec128 Vec128AndNot(Vec128 x, Vec128 y) {
-  // Does PPC not a have a bitwise invert operator, like vec_not? Using
-  // vec_nand(x, x) instead. Note that vec_nand(x,y) == ~(x & y) while Intel's
-  // andn(x, y) == ~x & y.
-  return vec_and(vec_nand(x, x), y);
-}
+inline Vec128 Vec128AndNot(Vec128 x, Vec128 y) { return vec_andc(y, x); }
 
 inline Vec128 Vec128Xor(Vec128 x, Vec128 y) { return vec_xor(x, y); }
 
