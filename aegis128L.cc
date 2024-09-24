@@ -44,7 +44,7 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE bool CompareTags(Aegis128LTag tag,
 inline ABSL_ATTRIBUTE_ALWAYS_INLINE bool IsWideLoadSafe(const void *ptr,
                                                         size_t size) {
 #if !defined(ADDRESS_SANITIZER) && !defined(MEMORY_SANITIZER) && \
-    !defined(THREAD_SANITIZER)
+    !defined(THREAD_SANITIZER) && !defined(HWADDRESS_SANITIZER)
 #ifndef NDEBUG
   assert(!(size & (size - 1)));  // Power of two?
   assert(size < 128);          // Caller should use sane values.
