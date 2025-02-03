@@ -292,9 +292,9 @@ inline ABSL_ATTRIBUTE_ALWAYS_INLINE void Process(
 #pragma unroll(2)
   for (; i + 1 < full_blocks; i += 2) {
     // Calling ProcessBlock with a fixed size=32, removes its bounds checks.
-    ProcessBlock<direction>(rs, input + i * 16, output + i * 16, 0, 32);
+    ProcessBlock<direction>(rs, input + i * 16, (direction != AAD ? output + i * 16 : nullptr), 0, 32);
   }
-  ProcessBlock<direction>(rs, input + i * 16, output + i * 16, 0, size % 32);
+  ProcessBlock<direction>(rs, input + i * 16, (direction != AAD ? output + i * 16 : nullptr), 0, size % 32);
 }
 
 }  // namespace internal
