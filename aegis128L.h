@@ -15,8 +15,8 @@
 #ifndef AEGIS_CIPHER_AEGIS128L_H_
 #define AEGIS_CIPHER_AEGIS128L_H_
 
-#include "absl/base/internal/endian.h"
 #include "absl/functional/function_ref.h"
+#include "absl/numeric/bits.h"
 #include "absl/strings/string_view.h"
 #include "vec128.h"
 #include "vec256_tuples.h"
@@ -54,6 +54,13 @@ struct ResumableState final {
   alignas(128) Vec128 S[10];
 };
 
+inline uint64_t LittleEndianFromHost64(uint64_t v) {
+  if constexpr (absl::endian::native != absl::endian::little) {
+    v = absl::byteswap(v);
+  }
+  return v;
+}
+
 }  // namespace internal
 
 inline Aegis128LKey LoadKey(const char *key) { return Vec128Load(key); }
@@ -73,11 +80,11 @@ inline Aegis128LNonce LoadNonce(absl::string_view nonce) {
 // Load nonce from two numbers with n0 being the first part, and n1 being the
 // second. The nonce parts are assumed to be in little-endian ordering.
 inline Aegis128LNonce LoadNonceLE(uint64_t n1, uint64_t n0) {
-  // While it is not particularly useful to have LittleEndian::FromHost
+  // While it is not particularly useful to have LittleEndianFromHost64
   // conversions in heavily Intel focused code, it reminds us that we expected
   // n1 & n0 to be in little-endian.
-  return MakeVec128Epi64x(absl::little_endian::FromHost64(n1),
-                          absl::little_endian::FromHost64(n0));
+  return MakeVec128Epi64x(internal::LittleEndianFromHost64(n1),
+                          internal::LittleEndianFromHost64(n0));
 }
 
 class Aegis128LPreKeyed final {
