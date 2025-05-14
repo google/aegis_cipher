@@ -55,10 +55,13 @@ struct ResumableState final {
 };
 
 inline uint64_t LittleEndianFromHost64(uint64_t v) {
-  if constexpr (absl::endian::native != absl::endian::little) {
-    v = absl::byteswap(v);
-  }
+#if defined(ABSL_IS_LITTLE_ENDIAN)
   return v;
+#elif defined(ABSL_IS_BIG_ENDIAN)
+  return std::byteswap(v);
+#else
+#error ABSL did not define endianness.
+#endif
 }
 
 }  // namespace internal
