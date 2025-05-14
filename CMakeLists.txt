@@ -25,6 +25,8 @@ set(CMAKE_CXX_FLAGS "-O2 -msse2 -maes -msse3 -msse4.1")
 find_package(absl REQUIRED)
 find_package(jsoncpp REQUIRED)
 find_package(GTest REQUIRED)
+find_package(Threads REQUIRED) # Benchmark needs pthreads
+find_package(benchmark REQUIRED) # Find the Google Benchmark package
 
 enable_testing()
 
@@ -32,3 +34,5 @@ add_executable(aegis128L_test aegis128L.cc aegis128L_test.cc)
 target_link_libraries(aegis128L_test gtest_main gtest absl::base absl::strings absl::random_random jsoncpp)
 add_test(NAME aegis128L_test_test COMMAND aegis128L_test)
 
+add_executable(aegis128L_benchmark aegis128L.cc aegis128L_benchmark.cc)
+target_link_libraries(aegis128L_benchmark benchmark::benchmark benchmark::benchmark_main absl::base absl::strings absl::random_random Threads::Threads)
