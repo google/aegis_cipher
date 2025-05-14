@@ -19,7 +19,8 @@ We support:
 - ARM NEON,
 - PPC Altivec.
 
-This is not an officially supported Google product.
+This is not an officially supported Google product nor is there active
+development. We encourage independent forks of this code base.
 
 ## Building
 
